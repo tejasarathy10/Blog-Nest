@@ -1,1017 +1,1064 @@
-'use strict';
-
-import bind from './helpers/bind.js';
-
-// utils is a library of generic helper functions non-specific to axios
-
-const { toString } = Object.prototype;
-const { getPrototypeOf } = Object;
-const { iterator, toStringTag } = Symbol;
-
-/* Creating a function that will check if an object has a property. */
-const hasOwnProperty = (
-  ({ hasOwnProperty }) =>
-  (obj, prop) =>
-    hasOwnProperty.call(obj, prop)
-)(Object.prototype);
-
-/**
- * Walk the prototype chain (excluding the shared Object.prototype) looking for
- * an own `prop`. This distinguishes genuine own/inherited members — including
- * class accessors and template prototypes — from members injected via
- * Object.prototype pollution (e.g. `Object.prototype.username = '...'`), which
- * live on Object.prototype itself and are therefore never matched.
- *
- * @param {*} thing The value whose chain to inspect
- * @param {string|symbol} prop The property key to look for
- *
- * @returns {boolean} True when `prop` is owned below Object.prototype
- */
-const hasOwnInPrototypeChain = (thing, prop) => {
-  let obj = thing;
-  const seen = [];
-
-  while (obj != null && obj !== Object.prototype) {
-    if (seen.indexOf(obj) !== -1) {
-      return false;
-    }
-    seen.push(obj);
-
-    if (hasOwnProperty(obj, prop)) {
-      return true;
-    }
-    obj = getPrototypeOf(obj);
-  }
-  return false;
-};
-
-/**
- * Read `obj[prop]` only when it is safe from Object.prototype pollution. Own
- * properties and members inherited from a non-Object.prototype source (a class
- * instance or template object) are honored; a value reachable only through a
- * polluted Object.prototype is ignored and `undefined` is returned.
- *
- * @param {*} obj The source object
- * @param {string|symbol} prop The property key to read
- *
- * @returns {*} The resolved value, or undefined when unsafe/absent
- */
-const getSafeProp = (obj, prop) =>
-  obj != null && hasOwnInPrototypeChain(obj, prop) ? obj[prop] : undefined;
-
-const kindOf = ((cache) => (thing) => {
-  const str = toString.call(thing);
-  return cache[str] || (cache[str] = str.slice(8, -1).toLowerCase());
-})(Object.create(null));
-
-const kindOfTest = (type) => {
-  type = type.toLowerCase();
-  return (thing) => kindOf(thing) === type;
-};
-
-const typeOfTest = (type) => (thing) => typeof thing === type;
-
-/**
- * Determine if a value is a non-null object
- *
- * @param {Object} val The value to test
- *
- * @returns {boolean} True if value is an Array, otherwise false
- */
-const { isArray } = Array;
-
-/**
- * Determine if a value is undefined
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if the value is undefined, otherwise false
- */
-const isUndefined = typeOfTest('undefined');
-
-/**
- * Determine if a value is a Buffer
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a Buffer, otherwise false
- */
-function isBuffer(val) {
-  return (
-    val !== null &&
-    !isUndefined(val) &&
-    val.constructor !== null &&
-    !isUndefined(val.constructor) &&
-    isFunction(val.constructor.isBuffer) &&
-    val.constructor.isBuffer(val)
-  );
-}
-
-/**
- * Determine if a value is an ArrayBuffer
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is an ArrayBuffer, otherwise false
- */
-const isArrayBuffer = kindOfTest('ArrayBuffer');
-
-/**
- * Determine if a value is a view on an ArrayBuffer
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a view on an ArrayBuffer, otherwise false
- */
-function isArrayBufferView(val) {
-  let result;
-  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView) {
-    result = ArrayBuffer.isView(val);
-  } else {
-    result = val && val.buffer && isArrayBuffer(val.buffer);
-  }
-  return result;
-}
-
-/**
- * Determine if a value is a String
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a String, otherwise false
- */
-const isString = typeOfTest('string');
-
-/**
- * Determine if a value is a Function
- *
- * @param {*} val The value to test
- * @returns {boolean} True if value is a Function, otherwise false
- */
-const isFunction = typeOfTest('function');
-
-/**
- * Determine if a value is a Number
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a Number, otherwise false
- */
-const isNumber = typeOfTest('number');
-
-/**
- * Determine if a value is an Object
- *
- * @param {*} thing The value to test
- *
- * @returns {boolean} True if value is an Object, otherwise false
- */
-const isObject = (thing) => thing !== null && typeof thing === 'object';
-
-/**
- * Determine if a value is a Boolean
- *
- * @param {*} thing The value to test
- * @returns {boolean} True if value is a Boolean, otherwise false
- */
-const isBoolean = (thing) => thing === true || thing === false;
-
-/**
- * Determine if a value is a plain Object
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a plain Object, otherwise false
- */
-const isPlainObject = (val) => {
-  if (!isObject(val)) {
-    return false;
-  }
-
-  const prototype = getPrototypeOf(val);
-  return (
-    (prototype === null ||
-      prototype === Object.prototype ||
-      getPrototypeOf(prototype) === null) &&
-    // Treat any genuine (non-Object.prototype-polluted) Symbol.toStringTag or
-    // Symbol.iterator as evidence the value is a tagged/iterable type rather
-    // than a plain object, while ignoring keys injected onto Object.prototype.
-    !hasOwnInPrototypeChain(val, toStringTag) &&
-    !hasOwnInPrototypeChain(val, iterator)
-  );
-};
-
-/**
- * Determine if a value is an empty object (safely handles Buffers)
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is an empty object, otherwise false
- */
-const isEmptyObject = (val) => {
-  // Early return for non-objects or Buffers to prevent RangeError
-  if (!isObject(val) || isBuffer(val)) {
-    return false;
-  }
-
-  try {
-    return Object.keys(val).length === 0 && Object.getPrototypeOf(val) === Object.prototype;
-  } catch (e) {
-    // Fallback for any other objects that might cause RangeError with Object.keys()
-    return false;
-  }
-};
-
-/**
- * Determine if a value is a Date
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a Date, otherwise false
- */
-const isDate = kindOfTest('Date');
-
-/**
- * Determine if a value is a File
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a File, otherwise false
- */
-const isFile = kindOfTest('File');
-
-/**
- * Determine if a value is a React Native Blob
- * React Native "blob": an object with a `uri` attribute. Optionally, it can
- * also have a `name` and `type` attribute to specify filename and content type
- *
- * @see https://github.com/facebook/react-native/blob/26684cf3adf4094eb6c405d345a75bf8c7c0bf88/Libraries/Network/FormData.js#L68-L71
- *
- * @param {*} value The value to test
- *
- * @returns {boolean} True if value is a React Native Blob, otherwise false
- */
-const isReactNativeBlob = (value) => {
-  return !!(value && typeof value.uri !== 'undefined');
-};
-
-/**
- * Determine if environment is React Native
- * ReactNative `FormData` has a non-standard `getParts()` method
- *
- * @param {*} formData The formData to test
- *
- * @returns {boolean} True if environment is React Native, otherwise false
- */
-const isReactNative = (formData) => formData && typeof formData.getParts !== 'undefined';
-
-/**
- * Determine if a value is a Blob
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a Blob, otherwise false
- */
-const isBlob = kindOfTest('Blob');
-
-/**
- * Determine if a value is a FileList
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a FileList, otherwise false
- */
-const isFileList = kindOfTest('FileList');
-
-/**
- * Determine if a value is a Stream
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a Stream, otherwise false
- */
-const isStream = (val) => isObject(val) && isFunction(val.pipe);
-
-/**
- * Determine if a value is a FormData
- *
- * @param {*} thing The value to test
- *
- * @returns {boolean} True if value is an FormData, otherwise false
- */
-function getGlobal() {
-  if (typeof globalThis !== 'undefined') return globalThis;
-  if (typeof self !== 'undefined') return self;
-  if (typeof window !== 'undefined') return window;
-  if (typeof global !== 'undefined') return global;
-  return {};
-}
-
-const G = getGlobal();
-const FormDataCtor = typeof G.FormData !== 'undefined' ? G.FormData : undefined;
-
-const isFormData = (thing) => {
-  if (!thing) return false;
-  if (FormDataCtor && thing instanceof FormDataCtor) return true;
-  // Reject plain objects inheriting directly from Object.prototype so prototype-pollution gadgets can't spoof FormData.
-  const proto = getPrototypeOf(thing);
-  if (!proto || proto === Object.prototype) return false;
-  if (!isFunction(thing.append)) return false;
-  const kind = kindOf(thing);
-  return (
-    kind === 'formdata' ||
-    // detect form-data instance
-    (kind === 'object' && isFunction(thing.toString) && thing.toString() === '[object FormData]')
-  );
-};
-
-/**
- * Determine if a value is a URLSearchParams object
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a URLSearchParams object, otherwise false
- */
-const isURLSearchParams = kindOfTest('URLSearchParams');
-
-const [isReadableStream, isRequest, isResponse, isHeaders] = [
-  'ReadableStream',
-  'Request',
-  'Response',
-  'Headers',
-].map(kindOfTest);
-
-/**
- * Trim excess whitespace off the beginning and end of a string
- *
- * @param {String} str The String to trim
- *
- * @returns {String} The String freed of excess whitespace
- */
-const trim = (str) => {
-  return str.trim ? str.trim() : str.replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, '');
-};
-/**
- * Iterate over an Array or an Object invoking a function for each item.
- *
- * If `obj` is an Array callback will be called passing
- * the value, index, and complete array for each item.
- *
- * If 'obj' is an Object callback will be called passing
- * the value, key, and complete object for each property.
- *
- * @param {Object|Array<unknown>} obj The object to iterate
- * @param {Function} fn The callback to invoke for each item
- *
- * @param {Object} [options]
- * @param {Boolean} [options.allOwnKeys = false]
- * @returns {any}
- */
-function forEach(obj, fn, { allOwnKeys = false } = {}) {
-  // Don't bother if no value provided
-  if (obj === null || typeof obj === 'undefined') {
-    return;
-  }
-
-  let i;
-  let l;
-
-  // Force an array if not already something iterable
-  if (typeof obj !== 'object') {
-    /*eslint no-param-reassign:0*/
-    obj = [obj];
-  }
-
-  if (isArray(obj)) {
-    // Iterate over array values
-    for (i = 0, l = obj.length; i < l; i++) {
-      fn.call(null, obj[i], i, obj);
-    }
-  } else {
-    // Buffer check
-    if (isBuffer(obj)) {
-      return;
-    }
-
-    // Iterate over object keys
-    const keys = allOwnKeys ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
-    const len = keys.length;
-    let key;
-
-    for (i = 0; i < len; i++) {
-      key = keys[i];
-      fn.call(null, obj[key], key, obj);
-    }
-  }
-}
-
-/**
- * Finds a key in an object, case-insensitive, returning the actual key name.
- * Returns null if the object is a Buffer or if no match is found.
- *
- * @param {Object} obj - The object to search.
- * @param {string} key - The key to find (case-insensitive).
- * @returns {?string} The actual key name if found, otherwise null.
- */
-function findKey(obj, key) {
-  if (isBuffer(obj)) {
-    return null;
-  }
-
-  key = key.toLowerCase();
-  const keys = Object.keys(obj);
-  let i = keys.length;
-  let _key;
-  while (i-- > 0) {
-    _key = keys[i];
-    if (key === _key.toLowerCase()) {
-      return _key;
-    }
-  }
-  return null;
-}
-
-const _global = (() => {
-  /*eslint no-undef:0*/
-  if (typeof globalThis !== 'undefined') return globalThis;
-  return typeof self !== 'undefined' ? self : typeof window !== 'undefined' ? window : global;
-})();
-
-const isContextDefined = (context) => !isUndefined(context) && context !== _global;
-
-/**
- * Accepts varargs expecting each argument to be an object, then
- * immutably merges the properties of each object and returns result.
- *
- * When multiple objects contain the same key the later object in
- * the arguments list will take precedence.
- *
- * Example:
- *
- * ```js
- * const result = merge({foo: 123}, {foo: 456});
- * console.log(result.foo); // outputs 456
- * ```
- *
- * @param {Object} obj1 Object to merge
- *
- * @returns {Object} Result of all merge properties
- */
-function merge(...objs) {
-  const { caseless, skipUndefined } = (isContextDefined(this) && this) || {};
-  const result = {};
-  const assignValue = (val, key) => {
-    // Skip dangerous property names to prevent prototype pollution
-    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
-      return;
-    }
-
-    // findKey lowercases the key, so caseless lookup only applies to strings —
-    // symbol keys are identity-matched.
-    const targetKey = (caseless && typeof key === 'string' && findKey(result, key)) || key;
-    // Read via own-prop only — a bare `result[targetKey]` walks the prototype
-    // chain, so a polluted Object.prototype value could surface here and get
-    // copied into the merged result.
-    const existing = hasOwnProperty(result, targetKey) ? result[targetKey] : undefined;
-    if (isPlainObject(existing) && isPlainObject(val)) {
-      result[targetKey] = merge(existing, val);
-    } else if (isPlainObject(val)) {
-      result[targetKey] = merge({}, val);
-    } else if (isArray(val)) {
-      result[targetKey] = val.slice();
-    } else if (!skipUndefined || !isUndefined(val)) {
-      result[targetKey] = val;
-    }
-  };
-
-  for (let i = 0, l = objs.length; i < l; i++) {
-    const source = objs[i];
-    if (!source || isBuffer(source)) {
-      continue;
-    }
-
-    forEach(source, assignValue);
-
-    if (typeof source !== 'object' || isArray(source)) {
-      continue;
-    }
-
-    const symbols = Object.getOwnPropertySymbols(source);
-    for (let j = 0; j < symbols.length; j++) {
-      const symbol = symbols[j];
-      if (propertyIsEnumerable.call(source, symbol)) {
-        assignValue(source[symbol], symbol);
-      }
-    }
-  }
-  return result;
-}
-
-/**
- * Extends object a by mutably adding to it the properties of object b.
- *
- * @param {Object} a The object to be extended
- * @param {Object} b The object to copy properties from
- * @param {Object} thisArg The object to bind function to
- *
- * @param {Object} [options]
- * @param {Boolean} [options.allOwnKeys]
- * @returns {Object} The resulting value of object a
- */
-const extend = (a, b, thisArg, { allOwnKeys } = {}) => {
-  forEach(
-    b,
-    (val, key) => {
-      if (thisArg && isFunction(val)) {
-        Object.defineProperty(a, key, {
-          // Null-proto descriptor so a polluted Object.prototype.get cannot
-          // hijack defineProperty's accessor-vs-data resolution.
-          __proto__: null,
-          value: bind(val, thisArg),
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
-      } else {
-        Object.defineProperty(a, key, {
-          __proto__: null,
-          value: val,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
-      }
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.matchesParentDomain = exports.parseUnsignedInteger = exports.parseInteger = exports.compareObjectId = exports.getMongoDBClientEncryption = exports.commandSupportsReadConcern = exports.shuffle = exports.supportsRetryableWrites = exports.enumToString = exports.emitWarningOnce = exports.emitWarning = exports.MONGODB_WARNING_CODE = exports.DEFAULT_PK_FACTORY = exports.HostAddress = exports.BufferPool = exports.List = exports.deepCopy = exports.isRecord = exports.setDifference = exports.isHello = exports.isSuperset = exports.resolveOptions = exports.hasAtomicOperators = exports.calculateDurationInMs = exports.now = exports.makeStateMachine = exports.errorStrictEqual = exports.arrayStrictEqual = exports.eachAsync = exports.maxWireVersion = exports.uuidV4 = exports.databaseNamespace = exports.maybeCallback = exports.makeCounter = exports.MongoDBCollectionNamespace = exports.MongoDBNamespace = exports.ns = exports.getTopology = exports.decorateWithExplain = exports.decorateWithReadConcern = exports.decorateWithCollation = exports.isPromiseLike = exports.applyRetryableWrites = exports.filterOptions = exports.mergeOptions = exports.isObject = exports.normalizeHintField = exports.checkCollectionName = exports.hostMatchesWildcards = exports.ByteUtils = void 0;
+exports.request = void 0;
+const crypto = require("crypto");
+const http = require("http");
+const url = require("url");
+const url_1 = require("url");
+const bson_1 = require("./bson");
+const constants_1 = require("./cmap/wire_protocol/constants");
+const constants_2 = require("./constants");
+const error_1 = require("./error");
+const read_concern_1 = require("./read_concern");
+const read_preference_1 = require("./read_preference");
+const common_1 = require("./sdam/common");
+const write_concern_1 = require("./write_concern");
+exports.ByteUtils = {
+    toLocalBufferType(buffer) {
+        return Buffer.isBuffer(buffer)
+            ? buffer
+            : Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     },
-    { allOwnKeys }
-  );
-  return a;
-};
-
-/**
- * Remove byte order marker. This catches EF BB BF (the UTF-8 BOM)
- *
- * @param {string} content with BOM
- *
- * @returns {string} content value without BOM
- */
-const stripBOM = (content) => {
-  if (content.charCodeAt(0) === 0xfeff) {
-    content = content.slice(1);
-  }
-  return content;
-};
-
-/**
- * Inherit the prototype methods from one constructor into another
- * @param {function} constructor
- * @param {function} superConstructor
- * @param {object} [props]
- * @param {object} [descriptors]
- *
- * @returns {void}
- */
-const inherits = (constructor, superConstructor, props, descriptors) => {
-  constructor.prototype = Object.create(superConstructor.prototype, descriptors);
-  Object.defineProperty(constructor.prototype, 'constructor', {
-    __proto__: null,
-    value: constructor,
-    writable: true,
-    enumerable: false,
-    configurable: true,
-  });
-  Object.defineProperty(constructor, 'super', {
-    __proto__: null,
-    value: superConstructor.prototype,
-  });
-  props && Object.assign(constructor.prototype, props);
-};
-
-/**
- * Resolve object with deep prototype chain to a flat object
- * @param {Object} sourceObj source object
- * @param {Object} [destObj]
- * @param {Function|Boolean} [filter]
- * @param {Function} [propFilter]
- *
- * @returns {Object}
- */
-const toFlatObject = (sourceObj, destObj, filter, propFilter) => {
-  let props;
-  let i;
-  let prop;
-  const merged = {};
-
-  destObj = destObj || {};
-  // eslint-disable-next-line no-eq-null,eqeqeq
-  if (sourceObj == null) return destObj;
-
-  do {
-    props = Object.getOwnPropertyNames(sourceObj);
-    i = props.length;
-    while (i-- > 0) {
-      prop = props[i];
-      if ((!propFilter || propFilter(prop, sourceObj, destObj)) && !merged[prop]) {
-        destObj[prop] = sourceObj[prop];
-        merged[prop] = true;
-      }
+    equals(seqA, seqB) {
+        return exports.ByteUtils.toLocalBufferType(seqA).equals(seqB);
+    },
+    compare(seqA, seqB) {
+        return exports.ByteUtils.toLocalBufferType(seqA).compare(seqB);
+    },
+    toBase64(uint8array) {
+        return exports.ByteUtils.toLocalBufferType(uint8array).toString('base64');
     }
-    sourceObj = filter !== false && getPrototypeOf(sourceObj);
-  } while (sourceObj && (!filter || filter(sourceObj, destObj)) && sourceObj !== Object.prototype);
-
-  return destObj;
 };
-
 /**
- * Determines whether a string ends with the characters of a specified string
- *
- * @param {String} str
- * @param {String} searchString
- * @param {Number} [position= 0]
- *
- * @returns {boolean}
+ * Determines if a connection's address matches a user provided list
+ * of domain wildcards.
  */
-const endsWith = (str, searchString, position) => {
-  str = String(str);
-  if (position === undefined || position > str.length) {
-    position = str.length;
-  }
-  position -= searchString.length;
-  const lastIndex = str.indexOf(searchString, position);
-  return lastIndex !== -1 && lastIndex === position;
-};
-
-/**
- * Returns new array from array like object or null if failed
- *
- * @param {*} [thing]
- *
- * @returns {?Array}
- */
-const toArray = (thing) => {
-  if (!thing) return null;
-  if (isArray(thing)) return thing;
-  let i = thing.length;
-  if (!isNumber(i)) return null;
-  const arr = new Array(i);
-  while (i-- > 0) {
-    arr[i] = thing[i];
-  }
-  return arr;
-};
-
-/**
- * Checking if the Uint8Array exists and if it does, it returns a function that checks if the
- * thing passed in is an instance of Uint8Array
- *
- * @param {TypedArray}
- *
- * @returns {Array}
- */
-// eslint-disable-next-line func-names
-const isTypedArray = ((TypedArray) => {
-  // eslint-disable-next-line func-names
-  return (thing) => {
-    return TypedArray && thing instanceof TypedArray;
-  };
-})(typeof Uint8Array !== 'undefined' && getPrototypeOf(Uint8Array));
-
-/**
- * For each entry in the object, call the function with the key and value.
- *
- * @param {Object<any, any>} obj - The object to iterate over.
- * @param {Function} fn - The function to call for each entry.
- *
- * @returns {void}
- */
-const forEachEntry = (obj, fn) => {
-  const generator = obj && obj[iterator];
-
-  const _iterator = generator.call(obj);
-
-  let result;
-
-  while ((result = _iterator.next()) && !result.done) {
-    const pair = result.value;
-    fn.call(obj, pair[0], pair[1]);
-  }
-};
-
-/**
- * It takes a regular expression and a string, and returns an array of all the matches
- *
- * @param {string} regExp - The regular expression to match against.
- * @param {string} str - The string to search.
- *
- * @returns {Array<boolean>}
- */
-const matchAll = (regExp, str) => {
-  let matches;
-  const arr = [];
-
-  while ((matches = regExp.exec(str)) !== null) {
-    arr.push(matches);
-  }
-
-  return arr;
-};
-
-/* Checking if the kindOfTest function returns true when passed an HTMLFormElement. */
-const isHTMLForm = kindOfTest('HTMLFormElement');
-
-const toCamelCase = (str) => {
-  return str.toLowerCase().replace(/[-_\s]([a-z\d])(\w*)/g, function replacer(m, p1, p2) {
-    return p1.toUpperCase() + p2;
-  });
-};
-
-const { propertyIsEnumerable } = Object.prototype;
-
-/**
- * Determine if a value is a RegExp object
- *
- * @param {*} val The value to test
- *
- * @returns {boolean} True if value is a RegExp object, otherwise false
- */
-const isRegExp = kindOfTest('RegExp');
-
-const reduceDescriptors = (obj, reducer) => {
-  const descriptors = Object.getOwnPropertyDescriptors(obj);
-  const reducedDescriptors = {};
-
-  forEach(descriptors, (descriptor, name) => {
-    let ret;
-    if ((ret = reducer(descriptor, name, obj)) !== false) {
-      reducedDescriptors[name] = ret || descriptor;
+function hostMatchesWildcards(host, wildcards) {
+    for (const wildcard of wildcards) {
+        if (host === wildcard ||
+            (wildcard.startsWith('*.') && host?.endsWith(wildcard.substring(2, wildcard.length))) ||
+            (wildcard.startsWith('*/') && host?.endsWith(wildcard.substring(2, wildcard.length)))) {
+            return true;
+        }
     }
-  });
-
-  Object.defineProperties(obj, reducedDescriptors);
-};
-
-/**
- * Makes all methods read-only
- * @param {Object} obj
- */
-
-const freezeMethods = (obj) => {
-  reduceDescriptors(obj, (descriptor, name) => {
-    // skip restricted props in strict mode
-    if (isFunction(obj) && ['arguments', 'caller', 'callee'].includes(name)) {
-      return false;
-    }
-
-    const value = obj[name];
-
-    if (!isFunction(value)) return;
-
-    descriptor.enumerable = false;
-
-    if ('writable' in descriptor) {
-      descriptor.writable = false;
-      return;
-    }
-
-    if (!descriptor.set) {
-      descriptor.set = () => {
-        throw Error("Can not rewrite read-only method '" + name + "'");
-      };
-    }
-  });
-};
-
-/**
- * Converts an array or a delimited string into an object set with values as keys and true as values.
- * Useful for fast membership checks.
- *
- * @param {Array|string} arrayOrString - The array or string to convert.
- * @param {string} delimiter - The delimiter to use if input is a string.
- * @returns {Object} An object with keys from the array or string, values set to true.
- */
-const toObjectSet = (arrayOrString, delimiter) => {
-  const obj = {};
-
-  const define = (arr) => {
-    arr.forEach((value) => {
-      obj[value] = true;
-    });
-  };
-
-  isArray(arrayOrString) ? define(arrayOrString) : define(String(arrayOrString).split(delimiter));
-
-  return obj;
-};
-
-const noop = () => {};
-
-const toFiniteNumber = (value, defaultValue) => {
-  return value != null && Number.isFinite((value = +value)) ? value : defaultValue;
-};
-
-/**
- * If the thing is a FormData object, return true, otherwise return false.
- *
- * @param {unknown} thing - The thing to check.
- *
- * @returns {boolean}
- */
-function isSpecCompliantForm(thing) {
-  return !!(
-    thing &&
-    isFunction(thing.append) &&
-    thing[toStringTag] === 'FormData' &&
-    thing[iterator]
-  );
+    return false;
 }
-
+exports.hostMatchesWildcards = hostMatchesWildcards;
 /**
- * Recursively converts an object to a JSON-compatible object, handling circular references and Buffers.
- *
- * @param {Object} obj - The object to convert.
- * @returns {Object} The JSON-compatible object.
+ * Throws if collectionName is not a valid mongodb collection namespace.
+ * @internal
  */
-const toJSONObject = (obj) => {
-  const visited = new WeakSet();
-
-  const visit = (source) => {
-    if (isObject(source)) {
-      if (visited.has(source)) {
-        return;
-      }
-
-      //Buffer check
-      if (isBuffer(source)) {
-        return source;
-      }
-
-      if (!('toJSON' in source)) {
-        // add-on descent / delete-on-ascent: preserves path semantics, so DAG nodes serialise at every occurrence (see #7230).
-        visited.add(source);
-        const target = isArray(source) ? [] : {};
-
-        forEach(source, (value, key) => {
-          const reducedValue = visit(value);
-          !isUndefined(reducedValue) && (target[key] = reducedValue);
-        });
-
-        visited.delete(source);
-
-        return target;
-      }
+function checkCollectionName(collectionName) {
+    if ('string' !== typeof collectionName) {
+        throw new error_1.MongoInvalidArgumentError('Collection name must be a String');
     }
-
-    return source;
-  };
-
-  return visit(obj);
-};
-
+    if (!collectionName || collectionName.indexOf('..') !== -1) {
+        throw new error_1.MongoInvalidArgumentError('Collection names cannot be empty');
+    }
+    if (collectionName.indexOf('$') !== -1 &&
+        collectionName.match(/((^\$cmd)|(oplog\.\$main))/) == null) {
+        // TODO(NODE-3483): Use MongoNamespace static method
+        throw new error_1.MongoInvalidArgumentError("Collection names must not contain '$'");
+    }
+    if (collectionName.match(/^\.|\.$/) != null) {
+        // TODO(NODE-3483): Use MongoNamespace static method
+        throw new error_1.MongoInvalidArgumentError("Collection names must not start or end with '.'");
+    }
+    // Validate that we are not passing 0x00 in the collection name
+    if (collectionName.indexOf('\x00') !== -1) {
+        // TODO(NODE-3483): Use MongoNamespace static method
+        throw new error_1.MongoInvalidArgumentError('Collection names cannot contain a null character');
+    }
+}
+exports.checkCollectionName = checkCollectionName;
 /**
- * Determines if a value is an async function.
- *
- * @param {*} thing - The value to test.
- * @returns {boolean} True if value is an async function, otherwise false.
+ * Ensure Hint field is in a shape we expect:
+ * - object of index names mapping to 1 or -1
+ * - just an index name
+ * @internal
  */
-const isAsyncFn = kindOfTest('AsyncFunction');
-
+function normalizeHintField(hint) {
+    let finalHint = undefined;
+    if (typeof hint === 'string') {
+        finalHint = hint;
+    }
+    else if (Array.isArray(hint)) {
+        finalHint = {};
+        hint.forEach(param => {
+            finalHint[param] = 1;
+        });
+    }
+    else if (hint != null && typeof hint === 'object') {
+        finalHint = {};
+        for (const name in hint) {
+            finalHint[name] = hint[name];
+        }
+    }
+    return finalHint;
+}
+exports.normalizeHintField = normalizeHintField;
+const TO_STRING = (object) => Object.prototype.toString.call(object);
 /**
- * Determines if a value is thenable (has then and catch methods).
- *
- * @param {*} thing - The value to test.
- * @returns {boolean} True if value is thenable, otherwise false.
+ * Checks if arg is an Object:
+ * - **NOTE**: the check is based on the `[Symbol.toStringTag]() === 'Object'`
+ * @internal
  */
-const isThenable = (thing) =>
-  thing &&
-  (isObject(thing) || isFunction(thing)) &&
-  isFunction(thing.then) &&
-  isFunction(thing.catch);
-
-// original code
-// https://github.com/DigitalBrainJS/AxiosPromise/blob/16deab13710ec09779922131f3fa5954320f83ab/lib/utils.js#L11-L34
-
+function isObject(arg) {
+    return '[object Object]' === TO_STRING(arg);
+}
+exports.isObject = isObject;
+/** @internal */
+function mergeOptions(target, source) {
+    return { ...target, ...source };
+}
+exports.mergeOptions = mergeOptions;
+/** @internal */
+function filterOptions(options, names) {
+    const filterOptions = {};
+    for (const name in options) {
+        if (names.includes(name)) {
+            filterOptions[name] = options[name];
+        }
+    }
+    // Filtered options
+    return filterOptions;
+}
+exports.filterOptions = filterOptions;
 /**
- * Provides a cross-platform setImmediate implementation.
- * Uses native setImmediate if available, otherwise falls back to postMessage or setTimeout.
+ * Applies retryWrites: true to a command if retryWrites is set on the command's database.
+ * @internal
  *
- * @param {boolean} setImmediateSupported - Whether setImmediate is supported.
- * @param {boolean} postMessageSupported - Whether postMessage is supported.
- * @returns {Function} A function to schedule a callback asynchronously.
+ * @param target - The target command to which we will apply retryWrites.
+ * @param db - The database from which we can inherit a retryWrites value.
  */
-const _setImmediate = ((setImmediateSupported, postMessageSupported) => {
-  if (setImmediateSupported) {
-    return setImmediate;
-  }
-
-  return postMessageSupported
-    ? ((token, callbacks) => {
-        _global.addEventListener(
-          'message',
-          ({ source, data }) => {
-            if (source === _global && data === token) {
-              callbacks.length && callbacks.shift()();
+function applyRetryableWrites(target, db) {
+    if (db && db.s.options?.retryWrites) {
+        target.retryWrites = true;
+    }
+    return target;
+}
+exports.applyRetryableWrites = applyRetryableWrites;
+/**
+ * Applies a write concern to a command based on well defined inheritance rules, optionally
+ * detecting support for the write concern in the first place.
+ * @internal
+ *
+ * @param target - the target command we will be applying the write concern to
+ * @param sources - sources where we can inherit default write concerns from
+ * @param options - optional settings passed into a command for write concern overrides
+ */
+/**
+ * Checks if a given value is a Promise
+ *
+ * @typeParam T - The resolution type of the possible promise
+ * @param value - An object that could be a promise
+ * @returns true if the provided value is a Promise
+ */
+function isPromiseLike(value) {
+    return !!value && typeof value.then === 'function';
+}
+exports.isPromiseLike = isPromiseLike;
+/**
+ * Applies collation to a given command.
+ * @internal
+ *
+ * @param command - the command on which to apply collation
+ * @param target - target of command
+ * @param options - options containing collation settings
+ */
+function decorateWithCollation(command, target, options) {
+    const capabilities = getTopology(target).capabilities;
+    if (options.collation && typeof options.collation === 'object') {
+        if (capabilities && capabilities.commandsTakeCollation) {
+            command.collation = options.collation;
+        }
+        else {
+            throw new error_1.MongoCompatibilityError(`Current topology does not support collation`);
+        }
+    }
+}
+exports.decorateWithCollation = decorateWithCollation;
+/**
+ * Applies a read concern to a given command.
+ * @internal
+ *
+ * @param command - the command on which to apply the read concern
+ * @param coll - the parent collection of the operation calling this method
+ */
+function decorateWithReadConcern(command, coll, options) {
+    if (options && options.session && options.session.inTransaction()) {
+        return;
+    }
+    const readConcern = Object.assign({}, command.readConcern || {});
+    if (coll.s.readConcern) {
+        Object.assign(readConcern, coll.s.readConcern);
+    }
+    if (Object.keys(readConcern).length > 0) {
+        Object.assign(command, { readConcern: readConcern });
+    }
+}
+exports.decorateWithReadConcern = decorateWithReadConcern;
+/**
+ * Applies an explain to a given command.
+ * @internal
+ *
+ * @param command - the command on which to apply the explain
+ * @param options - the options containing the explain verbosity
+ */
+function decorateWithExplain(command, explain) {
+    if (command.explain) {
+        return command;
+    }
+    return { explain: command, verbosity: explain.verbosity };
+}
+exports.decorateWithExplain = decorateWithExplain;
+/**
+ * A helper function to get the topology from a given provider. Throws
+ * if the topology cannot be found.
+ * @throws MongoNotConnectedError
+ * @internal
+ */
+function getTopology(provider) {
+    // MongoClient or ClientSession or AbstractCursor
+    if ('topology' in provider && provider.topology) {
+        return provider.topology;
+    }
+    else if ('client' in provider && provider.client.topology) {
+        return provider.client.topology;
+    }
+    throw new error_1.MongoNotConnectedError('MongoClient must be connected to perform this operation');
+}
+exports.getTopology = getTopology;
+/** @internal */
+function ns(ns) {
+    return MongoDBNamespace.fromString(ns);
+}
+exports.ns = ns;
+/** @public */
+class MongoDBNamespace {
+    /**
+     * Create a namespace object
+     *
+     * @param db - database name
+     * @param collection - collection name
+     */
+    constructor(db, collection) {
+        this.db = db;
+        this.collection = collection;
+        this.collection = collection === '' ? undefined : collection;
+    }
+    toString() {
+        return this.collection ? `${this.db}.${this.collection}` : this.db;
+    }
+    withCollection(collection) {
+        return new MongoDBCollectionNamespace(this.db, collection);
+    }
+    static fromString(namespace) {
+        if (typeof namespace !== 'string' || namespace === '') {
+            // TODO(NODE-3483): Replace with MongoNamespaceError
+            throw new error_1.MongoRuntimeError(`Cannot parse namespace from "${namespace}"`);
+        }
+        const [db, ...collectionParts] = namespace.split('.');
+        const collection = collectionParts.join('.');
+        return new MongoDBNamespace(db, collection === '' ? undefined : collection);
+    }
+}
+exports.MongoDBNamespace = MongoDBNamespace;
+/**
+ * @public
+ *
+ * A class representing a collection's namespace.  This class enforces (through Typescript) that
+ * the `collection` portion of the namespace is defined and should only be
+ * used in scenarios where this can be guaranteed.
+ */
+class MongoDBCollectionNamespace extends MongoDBNamespace {
+    constructor(db, collection) {
+        super(db, collection);
+        this.collection = collection;
+    }
+}
+exports.MongoDBCollectionNamespace = MongoDBCollectionNamespace;
+/** @internal */
+function* makeCounter(seed = 0) {
+    let count = seed;
+    while (true) {
+        const newCount = count;
+        count += 1;
+        yield newCount;
+    }
+}
+exports.makeCounter = makeCounter;
+function maybeCallback(promiseFn, callback) {
+    const promise = promiseFn();
+    if (callback == null) {
+        return promise;
+    }
+    promise.then(result => callback(undefined, result), error => callback(error));
+    return;
+}
+exports.maybeCallback = maybeCallback;
+/** @internal */
+function databaseNamespace(ns) {
+    return ns.split('.')[0];
+}
+exports.databaseNamespace = databaseNamespace;
+/**
+ * Synchronously Generate a UUIDv4
+ * @internal
+ */
+function uuidV4() {
+    const result = crypto.randomBytes(16);
+    result[6] = (result[6] & 0x0f) | 0x40;
+    result[8] = (result[8] & 0x3f) | 0x80;
+    return result;
+}
+exports.uuidV4 = uuidV4;
+/**
+ * A helper function for determining `maxWireVersion` between legacy and new topology instances
+ * @internal
+ */
+function maxWireVersion(topologyOrServer) {
+    if (topologyOrServer) {
+        if (topologyOrServer.loadBalanced) {
+            // Since we do not have a monitor, we assume the load balanced server is always
+            // pointed at the latest mongodb version. There is a risk that for on-prem
+            // deployments that don't upgrade immediately that this could alert to the
+            // application that a feature is available that is actually not.
+            return constants_1.MAX_SUPPORTED_WIRE_VERSION;
+        }
+        if (topologyOrServer.hello) {
+            return topologyOrServer.hello.maxWireVersion;
+        }
+        if ('lastHello' in topologyOrServer && typeof topologyOrServer.lastHello === 'function') {
+            const lastHello = topologyOrServer.lastHello();
+            if (lastHello) {
+                return lastHello.maxWireVersion;
             }
-          },
-          false
-        );
-
-        return (cb) => {
-          callbacks.push(cb);
-          _global.postMessage(token, '*');
+        }
+        if (topologyOrServer.description &&
+            'maxWireVersion' in topologyOrServer.description &&
+            topologyOrServer.description.maxWireVersion != null) {
+            return topologyOrServer.description.maxWireVersion;
+        }
+    }
+    return 0;
+}
+exports.maxWireVersion = maxWireVersion;
+/**
+ * Applies the function `eachFn` to each item in `arr`, in parallel.
+ * @internal
+ *
+ * @param arr - An array of items to asynchronously iterate over
+ * @param eachFn - A function to call on each item of the array. The callback signature is `(item, callback)`, where the callback indicates iteration is complete.
+ * @param callback - The callback called after every item has been iterated
+ */
+function eachAsync(arr, eachFn, callback) {
+    arr = arr || [];
+    let idx = 0;
+    let awaiting = 0;
+    for (idx = 0; idx < arr.length; ++idx) {
+        awaiting++;
+        eachFn(arr[idx], eachCallback);
+    }
+    if (awaiting === 0) {
+        callback();
+        return;
+    }
+    function eachCallback(err) {
+        awaiting--;
+        if (err) {
+            callback(err);
+            return;
+        }
+        if (idx === arr.length && awaiting <= 0) {
+            callback();
+        }
+    }
+}
+exports.eachAsync = eachAsync;
+/** @internal */
+function arrayStrictEqual(arr, arr2) {
+    if (!Array.isArray(arr) || !Array.isArray(arr2)) {
+        return false;
+    }
+    return arr.length === arr2.length && arr.every((elt, idx) => elt === arr2[idx]);
+}
+exports.arrayStrictEqual = arrayStrictEqual;
+/** @internal */
+function errorStrictEqual(lhs, rhs) {
+    if (lhs === rhs) {
+        return true;
+    }
+    if (!lhs || !rhs) {
+        return lhs === rhs;
+    }
+    if ((lhs == null && rhs != null) || (lhs != null && rhs == null)) {
+        return false;
+    }
+    if (lhs.constructor.name !== rhs.constructor.name) {
+        return false;
+    }
+    if (lhs.message !== rhs.message) {
+        return false;
+    }
+    return true;
+}
+exports.errorStrictEqual = errorStrictEqual;
+/** @internal */
+function makeStateMachine(stateTable) {
+    return function stateTransition(target, newState) {
+        const legalStates = stateTable[target.s.state];
+        if (legalStates && legalStates.indexOf(newState) < 0) {
+            throw new error_1.MongoRuntimeError(`illegal state transition from [${target.s.state}] => [${newState}], allowed: [${legalStates}]`);
+        }
+        target.emit('stateChanged', target.s.state, newState);
+        target.s.state = newState;
+    };
+}
+exports.makeStateMachine = makeStateMachine;
+/** @internal */
+function now() {
+    const hrtime = process.hrtime();
+    return Math.floor(hrtime[0] * 1000 + hrtime[1] / 1000000);
+}
+exports.now = now;
+/** @internal */
+function calculateDurationInMs(started) {
+    if (typeof started !== 'number') {
+        throw new error_1.MongoInvalidArgumentError('Numeric value required to calculate duration');
+    }
+    const elapsed = now() - started;
+    return elapsed < 0 ? 0 : elapsed;
+}
+exports.calculateDurationInMs = calculateDurationInMs;
+/** @internal */
+function hasAtomicOperators(doc) {
+    if (Array.isArray(doc)) {
+        for (const document of doc) {
+            if (hasAtomicOperators(document)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    const keys = Object.keys(doc);
+    return keys.length > 0 && keys[0][0] === '$';
+}
+exports.hasAtomicOperators = hasAtomicOperators;
+/**
+ * Merge inherited properties from parent into options, prioritizing values from options,
+ * then values from parent.
+ * @internal
+ */
+function resolveOptions(parent, options) {
+    const result = Object.assign({}, options, (0, bson_1.resolveBSONOptions)(options, parent));
+    // Users cannot pass a readConcern/writeConcern to operations in a transaction
+    const session = options?.session;
+    if (!session?.inTransaction()) {
+        const readConcern = read_concern_1.ReadConcern.fromOptions(options) ?? parent?.readConcern;
+        if (readConcern) {
+            result.readConcern = readConcern;
+        }
+        const writeConcern = write_concern_1.WriteConcern.fromOptions(options) ?? parent?.writeConcern;
+        if (writeConcern) {
+            result.writeConcern = writeConcern;
+        }
+    }
+    const readPreference = read_preference_1.ReadPreference.fromOptions(options) ?? parent?.readPreference;
+    if (readPreference) {
+        result.readPreference = readPreference;
+    }
+    return result;
+}
+exports.resolveOptions = resolveOptions;
+function isSuperset(set, subset) {
+    set = Array.isArray(set) ? new Set(set) : set;
+    subset = Array.isArray(subset) ? new Set(subset) : subset;
+    for (const elem of subset) {
+        if (!set.has(elem)) {
+            return false;
+        }
+    }
+    return true;
+}
+exports.isSuperset = isSuperset;
+/**
+ * Checks if the document is a Hello request
+ * @internal
+ */
+function isHello(doc) {
+    return doc[constants_2.LEGACY_HELLO_COMMAND] || doc.hello ? true : false;
+}
+exports.isHello = isHello;
+/** Returns the items that are uniquely in setA */
+function setDifference(setA, setB) {
+    const difference = new Set(setA);
+    for (const elem of setB) {
+        difference.delete(elem);
+    }
+    return difference;
+}
+exports.setDifference = setDifference;
+const HAS_OWN = (object, prop) => Object.prototype.hasOwnProperty.call(object, prop);
+function isRecord(value, requiredKeys = undefined) {
+    if (!isObject(value)) {
+        return false;
+    }
+    const ctor = value.constructor;
+    if (ctor && ctor.prototype) {
+        if (!isObject(ctor.prototype)) {
+            return false;
+        }
+        // Check to see if some method exists from the Object exists
+        if (!HAS_OWN(ctor.prototype, 'isPrototypeOf')) {
+            return false;
+        }
+    }
+    if (requiredKeys) {
+        const keys = Object.keys(value);
+        return isSuperset(keys, requiredKeys);
+    }
+    return true;
+}
+exports.isRecord = isRecord;
+/**
+ * Make a deep copy of an object
+ *
+ * NOTE: This is not meant to be the perfect implementation of a deep copy,
+ * but instead something that is good enough for the purposes of
+ * command monitoring.
+ */
+function deepCopy(value) {
+    if (value == null) {
+        return value;
+    }
+    else if (Array.isArray(value)) {
+        return value.map(item => deepCopy(item));
+    }
+    else if (isRecord(value)) {
+        const res = {};
+        for (const key in value) {
+            res[key] = deepCopy(value[key]);
+        }
+        return res;
+    }
+    const ctor = value.constructor;
+    if (ctor) {
+        switch (ctor.name.toLowerCase()) {
+            case 'date':
+                return new ctor(Number(value));
+            case 'map':
+                return new Map(value);
+            case 'set':
+                return new Set(value);
+            case 'buffer':
+                return Buffer.from(value);
+        }
+    }
+    return value;
+}
+exports.deepCopy = deepCopy;
+/**
+ * A sequential list of items in a circularly linked list
+ * @remarks
+ * The head node is special, it is always defined and has a value of null.
+ * It is never "included" in the list, in that, it is not returned by pop/shift or yielded by the iterator.
+ * The circular linkage and always defined head node are to reduce checks for null next/prev references to zero.
+ * New nodes are declared as object literals with keys always in the same order: next, prev, value.
+ * @internal
+ */
+class List {
+    get length() {
+        return this.count;
+    }
+    get [Symbol.toStringTag]() {
+        return 'List';
+    }
+    constructor() {
+        this.count = 0;
+        // this is carefully crafted:
+        // declaring a complete and consistently key ordered
+        // object is beneficial to the runtime optimizations
+        this.head = {
+            next: null,
+            prev: null,
+            value: null
         };
-      })(`axios@${Math.random()}`, [])
-    : (cb) => setTimeout(cb);
-})(typeof setImmediate === 'function', isFunction(_global.postMessage));
-
+        this.head.next = this.head;
+        this.head.prev = this.head;
+    }
+    toArray() {
+        return Array.from(this);
+    }
+    toString() {
+        return `head <=> ${this.toArray().join(' <=> ')} <=> head`;
+    }
+    *[Symbol.iterator]() {
+        for (const node of this.nodes()) {
+            yield node.value;
+        }
+    }
+    *nodes() {
+        let ptr = this.head.next;
+        while (ptr !== this.head) {
+            // Save next before yielding so that we make removing within iteration safe
+            const { next } = ptr;
+            yield ptr;
+            ptr = next;
+        }
+    }
+    /** Insert at end of list */
+    push(value) {
+        this.count += 1;
+        const newNode = {
+            next: this.head,
+            prev: this.head.prev,
+            value
+        };
+        this.head.prev.next = newNode;
+        this.head.prev = newNode;
+    }
+    /** Inserts every item inside an iterable instead of the iterable itself */
+    pushMany(iterable) {
+        for (const value of iterable) {
+            this.push(value);
+        }
+    }
+    /** Insert at front of list */
+    unshift(value) {
+        this.count += 1;
+        const newNode = {
+            next: this.head.next,
+            prev: this.head,
+            value
+        };
+        this.head.next.prev = newNode;
+        this.head.next = newNode;
+    }
+    remove(node) {
+        if (node === this.head || this.length === 0) {
+            return null;
+        }
+        this.count -= 1;
+        const prevNode = node.prev;
+        const nextNode = node.next;
+        prevNode.next = nextNode;
+        nextNode.prev = prevNode;
+        return node.value;
+    }
+    /** Removes the first node at the front of the list */
+    shift() {
+        return this.remove(this.head.next);
+    }
+    /** Removes the last node at the end of the list */
+    pop() {
+        return this.remove(this.head.prev);
+    }
+    /** Iterates through the list and removes nodes where filter returns true */
+    prune(filter) {
+        for (const node of this.nodes()) {
+            if (filter(node.value)) {
+                this.remove(node);
+            }
+        }
+    }
+    clear() {
+        this.count = 0;
+        this.head.next = this.head;
+        this.head.prev = this.head;
+    }
+    /** Returns the first item in the list, does not remove */
+    first() {
+        // If the list is empty, value will be the head's null
+        return this.head.next.value;
+    }
+    /** Returns the last item in the list, does not remove */
+    last() {
+        // If the list is empty, value will be the head's null
+        return this.head.prev.value;
+    }
+}
+exports.List = List;
 /**
- * Schedules a microtask or asynchronous callback as soon as possible.
- * Uses queueMicrotask if available, otherwise falls back to process.nextTick or _setImmediate.
- *
- * @type {Function}
+ * A pool of Buffers which allow you to read them as if they were one
+ * @internal
  */
-const asap =
-  typeof queueMicrotask !== 'undefined'
-    ? queueMicrotask.bind(_global)
-    : (typeof process !== 'undefined' && process.nextTick) || _setImmediate;
-
-// *********************
-
-const isIterable = (thing) => thing != null && isFunction(thing[iterator]);
-
-/**
- * Determine if a value is iterable via an iterator that is NOT sourced solely
- * from a polluted Object.prototype. Use this instead of `isIterable` whenever
- * the iterable comes from untrusted input (e.g. user-supplied header sources),
- * so `Object.prototype[Symbol.iterator] = ...` cannot turn an ordinary object
- * into an attacker-controlled entries iterator.
- *
- * @param {*} thing The value to test
- *
- * @returns {boolean} True if value has a non-polluted iterator
- */
-const isSafeIterable = (thing) =>
-  thing != null && hasOwnInPrototypeChain(thing, iterator) && isIterable(thing);
-
-export default {
-  isArray,
-  isArrayBuffer,
-  isBuffer,
-  isFormData,
-  isArrayBufferView,
-  isString,
-  isNumber,
-  isBoolean,
-  isObject,
-  isPlainObject,
-  isEmptyObject,
-  isReadableStream,
-  isRequest,
-  isResponse,
-  isHeaders,
-  isUndefined,
-  isDate,
-  isFile,
-  isReactNativeBlob,
-  isReactNative,
-  isBlob,
-  isRegExp,
-  isFunction,
-  isStream,
-  isURLSearchParams,
-  isTypedArray,
-  isFileList,
-  forEach,
-  merge,
-  extend,
-  trim,
-  stripBOM,
-  inherits,
-  toFlatObject,
-  kindOf,
-  kindOfTest,
-  endsWith,
-  toArray,
-  forEachEntry,
-  matchAll,
-  isHTMLForm,
-  hasOwnProperty,
-  hasOwnProp: hasOwnProperty, // an alias to avoid ESLint no-prototype-builtins detection
-  hasOwnInPrototypeChain,
-  getSafeProp,
-  reduceDescriptors,
-  freezeMethods,
-  toObjectSet,
-  toCamelCase,
-  noop,
-  toFiniteNumber,
-  findKey,
-  global: _global,
-  isContextDefined,
-  isSpecCompliantForm,
-  toJSONObject,
-  isAsyncFn,
-  isThenable,
-  setImmediate: _setImmediate,
-  asap,
-  isIterable,
-  isSafeIterable,
+class BufferPool {
+    constructor() {
+        this.buffers = new List();
+        this.totalByteLength = 0;
+    }
+    get length() {
+        return this.totalByteLength;
+    }
+    /** Adds a buffer to the internal buffer pool list */
+    append(buffer) {
+        this.buffers.push(buffer);
+        this.totalByteLength += buffer.length;
+    }
+    /**
+     * If BufferPool contains 4 bytes or more construct an int32 from the leading bytes,
+     * otherwise return null. Size can be negative, caller should error check.
+     */
+    getInt32() {
+        if (this.totalByteLength < 4) {
+            return null;
+        }
+        const firstBuffer = this.buffers.first();
+        if (firstBuffer != null && firstBuffer.byteLength >= 4) {
+            return firstBuffer.readInt32LE(0);
+        }
+        // Unlikely case: an int32 is split across buffers.
+        // Use read and put the returned buffer back on top
+        const top4Bytes = this.read(4);
+        const value = top4Bytes.readInt32LE(0);
+        // Put it back.
+        this.totalByteLength += 4;
+        this.buffers.unshift(top4Bytes);
+        return value;
+    }
+    /** Reads the requested number of bytes, optionally consuming them */
+    read(size) {
+        if (typeof size !== 'number' || size < 0) {
+            throw new error_1.MongoInvalidArgumentError('Argument "size" must be a non-negative number');
+        }
+        // oversized request returns empty buffer
+        if (size > this.totalByteLength) {
+            return Buffer.alloc(0);
+        }
+        // We know we have enough, we just don't know how it is spread across chunks
+        // TODO(NODE-4732): alloc API should change based on raw option
+        const result = Buffer.allocUnsafe(size);
+        for (let bytesRead = 0; bytesRead < size;) {
+            const buffer = this.buffers.shift();
+            if (buffer == null) {
+                break;
+            }
+            const bytesRemaining = size - bytesRead;
+            const bytesReadable = Math.min(bytesRemaining, buffer.byteLength);
+            const bytes = buffer.subarray(0, bytesReadable);
+            result.set(bytes, bytesRead);
+            bytesRead += bytesReadable;
+            this.totalByteLength -= bytesReadable;
+            if (bytesReadable < buffer.byteLength) {
+                this.buffers.unshift(buffer.subarray(bytesReadable));
+            }
+        }
+        return result;
+    }
+}
+exports.BufferPool = BufferPool;
+/** @public */
+class HostAddress {
+    constructor(hostString) {
+        this.host = undefined;
+        this.port = undefined;
+        this.socketPath = undefined;
+        this.isIPv6 = false;
+        const escapedHost = hostString.split(' ').join('%20'); // escape spaces, for socket path hosts
+        if (escapedHost.endsWith('.sock')) {
+            // heuristically determine if we're working with a domain socket
+            this.socketPath = decodeURIComponent(escapedHost);
+            return;
+        }
+        const urlString = `iLoveJS://${escapedHost}`;
+        let url;
+        try {
+            url = new url_1.URL(urlString);
+        }
+        catch (urlError) {
+            const runtimeError = new error_1.MongoRuntimeError(`Unable to parse ${escapedHost} with URL`);
+            runtimeError.cause = urlError;
+            throw runtimeError;
+        }
+        const hostname = url.hostname;
+        const port = url.port;
+        let normalized = decodeURIComponent(hostname).toLowerCase();
+        if (normalized.startsWith('[') && normalized.endsWith(']')) {
+            this.isIPv6 = true;
+            normalized = normalized.substring(1, hostname.length - 1);
+        }
+        this.host = normalized.toLowerCase();
+        if (typeof port === 'number') {
+            this.port = port;
+        }
+        else if (typeof port === 'string' && port !== '') {
+            this.port = Number.parseInt(port, 10);
+        }
+        else {
+            this.port = 27017;
+        }
+        if (this.port === 0) {
+            throw new error_1.MongoParseError('Invalid port (zero) with hostname');
+        }
+        Object.freeze(this);
+    }
+    [Symbol.for('nodejs.util.inspect.custom')]() {
+        return this.inspect();
+    }
+    inspect() {
+        return `new HostAddress('${this.toString()}')`;
+    }
+    toString() {
+        if (typeof this.host === 'string') {
+            if (this.isIPv6) {
+                return `[${this.host}]:${this.port}`;
+            }
+            return `${this.host}:${this.port}`;
+        }
+        return `${this.socketPath}`;
+    }
+    static fromString(s) {
+        return new HostAddress(s);
+    }
+    static fromHostPort(host, port) {
+        if (host.includes(':')) {
+            host = `[${host}]`; // IPv6 address
+        }
+        return HostAddress.fromString(`${host}:${port}`);
+    }
+    static fromSrvRecord({ name, port }) {
+        return HostAddress.fromHostPort(name, port);
+    }
+    toHostPort() {
+        if (this.socketPath) {
+            return { host: this.socketPath, port: 0 };
+        }
+        const host = this.host ?? '';
+        const port = this.port ?? 0;
+        return { host, port };
+    }
+}
+exports.HostAddress = HostAddress;
+exports.DEFAULT_PK_FACTORY = {
+    // We prefer not to rely on ObjectId having a createPk method
+    createPk() {
+        return new bson_1.ObjectId();
+    }
 };
+/**
+ * When the driver used emitWarning the code will be equal to this.
+ * @public
+ *
+ * @example
+ * ```ts
+ * process.on('warning', (warning) => {
+ *  if (warning.code === MONGODB_WARNING_CODE) console.error('Ah an important warning! :)')
+ * })
+ * ```
+ */
+exports.MONGODB_WARNING_CODE = 'MONGODB DRIVER';
+/** @internal */
+function emitWarning(message) {
+    return process.emitWarning(message, { code: exports.MONGODB_WARNING_CODE });
+}
+exports.emitWarning = emitWarning;
+const emittedWarnings = new Set();
+/**
+ * Will emit a warning once for the duration of the application.
+ * Uses the message to identify if it has already been emitted
+ * so using string interpolation can cause multiple emits
+ * @internal
+ */
+function emitWarningOnce(message) {
+    if (!emittedWarnings.has(message)) {
+        emittedWarnings.add(message);
+        return emitWarning(message);
+    }
+}
+exports.emitWarningOnce = emitWarningOnce;
+/**
+ * Takes a JS object and joins the values into a string separated by ', '
+ */
+function enumToString(en) {
+    return Object.values(en).join(', ');
+}
+exports.enumToString = enumToString;
+/**
+ * Determine if a server supports retryable writes.
+ *
+ * @internal
+ */
+function supportsRetryableWrites(server) {
+    if (!server) {
+        return false;
+    }
+    if (server.loadBalanced) {
+        // Loadbalanced topologies will always support retry writes
+        return true;
+    }
+    if (server.description.logicalSessionTimeoutMinutes != null) {
+        // that supports sessions
+        if (server.description.type !== common_1.ServerType.Standalone) {
+            // and that is not a standalone
+            return true;
+        }
+    }
+    return false;
+}
+exports.supportsRetryableWrites = supportsRetryableWrites;
+/**
+ * Fisher–Yates Shuffle
+ *
+ * Reference: https://bost.ocks.org/mike/shuffle/
+ * @param sequence - items to be shuffled
+ * @param limit - Defaults to `0`. If nonzero shuffle will slice the randomized array e.g, `.slice(0, limit)` otherwise will return the entire randomized array.
+ */
+function shuffle(sequence, limit = 0) {
+    const items = Array.from(sequence); // shallow copy in order to never shuffle the input
+    if (limit > items.length) {
+        throw new error_1.MongoRuntimeError('Limit must be less than the number of items');
+    }
+    let remainingItemsToShuffle = items.length;
+    const lowerBound = limit % items.length === 0 ? 1 : items.length - limit;
+    while (remainingItemsToShuffle > lowerBound) {
+        // Pick a remaining element
+        const randomIndex = Math.floor(Math.random() * remainingItemsToShuffle);
+        remainingItemsToShuffle -= 1;
+        // And swap it with the current element
+        const swapHold = items[remainingItemsToShuffle];
+        items[remainingItemsToShuffle] = items[randomIndex];
+        items[randomIndex] = swapHold;
+    }
+    return limit % items.length === 0 ? items : items.slice(lowerBound);
+}
+exports.shuffle = shuffle;
+// TODO(NODE-4936): read concern eligibility for commands should be codified in command construction
+// @see https://github.com/mongodb/specifications/blob/master/source/read-write-concern/read-write-concern.rst#read-concern
+function commandSupportsReadConcern(command, options) {
+    if (command.aggregate || command.count || command.distinct || command.find || command.geoNear) {
+        return true;
+    }
+    if (command.mapReduce &&
+        options &&
+        options.out &&
+        (options.out.inline === 1 || options.out === 'inline')) {
+        return true;
+    }
+    return false;
+}
+exports.commandSupportsReadConcern = commandSupportsReadConcern;
+/** A utility function to get the instance of mongodb-client-encryption, if it exists. */
+function getMongoDBClientEncryption() {
+    let mongodbClientEncryption = null;
+    // NOTE(NODE-4254): This is to get around the circular dependency between
+    // mongodb-client-encryption and the driver in the test scenarios.
+    if (typeof process.env.MONGODB_CLIENT_ENCRYPTION_OVERRIDE === 'string' &&
+        process.env.MONGODB_CLIENT_ENCRYPTION_OVERRIDE.length > 0) {
+        try {
+            // NOTE(NODE-3199): Ensure you always wrap an optional require literally in the try block
+            // Cannot be moved to helper utility function, bundlers search and replace the actual require call
+            // in a way that makes this line throw at bundle time, not runtime, catching here will make bundling succeed
+            mongodbClientEncryption = require(process.env.MONGODB_CLIENT_ENCRYPTION_OVERRIDE);
+        }
+        catch {
+            // ignore
+        }
+    }
+    else {
+        try {
+            // NOTE(NODE-3199): Ensure you always wrap an optional require literally in the try block
+            // Cannot be moved to helper utility function, bundlers search and replace the actual require call
+            // in a way that makes this line throw at bundle time, not runtime, catching here will make bundling succeed
+            mongodbClientEncryption = require('mongodb-client-encryption');
+        }
+        catch {
+            // ignore
+        }
+    }
+    return mongodbClientEncryption;
+}
+exports.getMongoDBClientEncryption = getMongoDBClientEncryption;
+/**
+ * Compare objectIds. `null` is always less
+ * - `+1 = oid1 is greater than oid2`
+ * - `-1 = oid1 is less than oid2`
+ * - `+0 = oid1 is equal oid2`
+ */
+function compareObjectId(oid1, oid2) {
+    if (oid1 == null && oid2 == null) {
+        return 0;
+    }
+    if (oid1 == null) {
+        return -1;
+    }
+    if (oid2 == null) {
+        return 1;
+    }
+    return exports.ByteUtils.compare(oid1.id, oid2.id);
+}
+exports.compareObjectId = compareObjectId;
+function parseInteger(value) {
+    if (typeof value === 'number')
+        return Math.trunc(value);
+    const parsedValue = Number.parseInt(String(value), 10);
+    return Number.isNaN(parsedValue) ? null : parsedValue;
+}
+exports.parseInteger = parseInteger;
+function parseUnsignedInteger(value) {
+    const parsedInt = parseInteger(value);
+    return parsedInt != null && parsedInt >= 0 ? parsedInt : null;
+}
+exports.parseUnsignedInteger = parseUnsignedInteger;
+/**
+ * Determines whether a provided address matches the provided parent domain.
+ *
+ * If a DNS server were to become compromised SRV records would still need to
+ * advertise addresses that are under the same domain as the srvHost.
+ *
+ * @param address - The address to check against a domain
+ * @param srvHost - The domain to check the provided address against
+ * @returns Whether the provided address matches the parent domain
+ */
+function matchesParentDomain(address, srvHost) {
+    // Remove trailing dot if exists on either the resolved address or the srv hostname
+    const normalizedAddress = address.endsWith('.') ? address.slice(0, address.length - 1) : address;
+    const normalizedSrvHost = srvHost.endsWith('.') ? srvHost.slice(0, srvHost.length - 1) : srvHost;
+    const allCharacterBeforeFirstDot = /^.*?\./;
+    // Remove all characters before first dot
+    // Add leading dot back to string so
+    //   an srvHostDomain = '.trusted.site'
+    //   will not satisfy an addressDomain that endsWith '.fake-trusted.site'
+    const addressDomain = `.${normalizedAddress.replace(allCharacterBeforeFirstDot, '')}`;
+    const srvHostDomain = `.${normalizedSrvHost.replace(allCharacterBeforeFirstDot, '')}`;
+    return addressDomain.endsWith(srvHostDomain);
+}
+exports.matchesParentDomain = matchesParentDomain;
+async function request(uri, options = {}) {
+    return new Promise((resolve, reject) => {
+        const requestOptions = {
+            method: 'GET',
+            timeout: 10000,
+            json: true,
+            ...url.parse(uri),
+            ...options
+        };
+        const req = http.request(requestOptions, res => {
+            res.setEncoding('utf8');
+            let data = '';
+            res.on('data', d => {
+                data += d;
+            });
+            res.once('end', () => {
+                if (options.json === false) {
+                    resolve(data);
+                    return;
+                }
+                try {
+                    const parsed = JSON.parse(data);
+                    resolve(parsed);
+                }
+                catch {
+                    // TODO(NODE-3483)
+                    reject(new error_1.MongoRuntimeError(`Invalid JSON response: "${data}"`));
+                }
+            });
+        });
+        req.once('timeout', () => req.destroy(new error_1.MongoNetworkTimeoutError(`Network request to ${uri} timed out after ${options.timeout} ms`)));
+        req.once('error', error => reject(error));
+        req.end();
+    });
+}
+exports.request = request;
+//# sourceMappingURL=utils.js.map
