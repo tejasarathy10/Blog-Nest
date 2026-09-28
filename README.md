@@ -1,57 +1,39 @@
-# balanced-match
+# lodash v4.18.1
 
-Match balanced string pairs, like `{` and `}` or `<b>` and
-`</b>`. Supports regular expressions as well!
+The [Lodash](https://lodash.com/) library exported as [Node.js](https://nodejs.org/) modules.
 
-## Example
+## Installation
 
-Get the first matching pair of braces:
+Using npm:
+```shell
+$ npm i -g npm
+$ npm i --save lodash
+```
 
+In Node.js:
 ```js
-import { balanced } from 'balanced-match'
+// Load the full build.
+var _ = require('lodash');
+// Load the core build.
+var _ = require('lodash/core');
+// Load the FP build for immutable auto-curried iteratee-first data-last methods.
+var fp = require('lodash/fp');
 
-console.log(balanced('{', '}', 'pre{in{nested}}post'))
-console.log(balanced('{', '}', 'pre{first}between{second}post'))
-console.log(
-  balanced(/\s+\{\s+/, /\s+\}\s+/, 'pre  {   in{nest}   }  post'),
-)
+// Load method categories.
+var array = require('lodash/array');
+var object = require('lodash/fp/object');
+
+// Cherry-pick methods for smaller browserify/rollup/webpack bundles.
+var at = require('lodash/at');
+var curryN = require('lodash/fp/curryN');
 ```
 
-The matches are:
+See the [package source](https://github.com/lodash/lodash/tree/4.18.1-npm) for more details.
 
-```bash
-$ node example.js
-{ start: 3, end: 14, pre: 'pre', body: 'in{nested}', post: 'post' }
-{ start: 3,
-  end: 9,
-  pre: 'pre',
-  body: 'first',
-  post: 'between{second}post' }
-{ start: 3, end: 17, pre: 'pre', body: 'in{nest}', post: 'post' }
-```
+**Note:**<br>
+Install [n_](https://www.npmjs.com/package/n_) for Lodash use in the Node.js < 6 REPL.
 
-## API
+## Support
 
-### const m = balanced(a, b, str)
-
-For the first non-nested matching pair of `a` and `b` in `str`, return an
-object with those keys:
-
-- **start** the index of the first match of `a`
-- **end** the index of the matching `b`
-- **pre** the preamble, `a` and `b` not included
-- **body** the match, `a` and `b` not included
-- **post** the postscript, `a` and `b` not included
-
-If there's no match, `undefined` will be returned.
-
-If the `str` contains more `a` than `b` / there are unmatched pairs, the first match that was closed will be used. For example, `{{a}` will match `['{', 'a', '']` and `{a}}` will match `['', 'a', '}']`.
-
-### const r = balanced.range(a, b, str)
-
-For the first non-nested matching pair of `a` and `b` in `str`, return an
-array with indexes: `[ <a index>, <b index> ]`.
-
-If there's no match, `undefined` will be returned.
-
-If the `str` contains more `a` than `b` / there are unmatched pairs, the first match that was closed will be used. For example, `{{a}` will match `[ 1, 3 ]` and `{a}}` will match `[0, 2]`.
+Tested in Chrome 74-75, Firefox 66-67, IE 11, Edge 18, Safari 11-12, & Node.js 8-12.<br>
+Automated [browser](https://saucelabs.com/u/lodash) & [CI](https://travis-ci.org/lodash/lodash/) test runs are available.
