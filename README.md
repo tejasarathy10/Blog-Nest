@@ -1,140 +1,233 @@
-# accepts
+# asynckit [![NPM Module](https://img.shields.io/npm/v/asynckit.svg?style=flat)](https://www.npmjs.com/package/asynckit)
 
-[![NPM Version][npm-version-image]][npm-url]
-[![NPM Downloads][npm-downloads-image]][npm-url]
-[![Node.js Version][node-version-image]][node-version-url]
-[![Build Status][github-actions-ci-image]][github-actions-ci-url]
-[![Test Coverage][coveralls-image]][coveralls-url]
+Minimal async jobs utility library, with streams support.
 
-Higher level content negotiation based on [negotiator](https://www.npmjs.com/package/negotiator).
-Extracted from [koa](https://www.npmjs.com/package/koa) for general use.
+[![PhantomJS Build](https://img.shields.io/travis/alexindigo/asynckit/v0.4.0.svg?label=browser&style=flat)](https://travis-ci.org/alexindigo/asynckit)
+[![Linux Build](https://img.shields.io/travis/alexindigo/asynckit/v0.4.0.svg?label=linux:0.12-6.x&style=flat)](https://travis-ci.org/alexindigo/asynckit)
+[![Windows Build](https://img.shields.io/appveyor/ci/alexindigo/asynckit/v0.4.0.svg?label=windows:0.12-6.x&style=flat)](https://ci.appveyor.com/project/alexindigo/asynckit)
 
-In addition to negotiator, it allows:
+[![Coverage Status](https://img.shields.io/coveralls/alexindigo/asynckit/v0.4.0.svg?label=code+coverage&style=flat)](https://coveralls.io/github/alexindigo/asynckit?branch=master)
+[![Dependency Status](https://img.shields.io/david/alexindigo/asynckit/v0.4.0.svg?style=flat)](https://david-dm.org/alexindigo/asynckit)
+[![bitHound Overall Score](https://www.bithound.io/github/alexindigo/asynckit/badges/score.svg)](https://www.bithound.io/github/alexindigo/asynckit)
 
-- Allows types as an array or arguments list, ie `(['text/html', 'application/json'])`
-  as well as `('text/html', 'application/json')`.
-- Allows type shorthands such as `json`.
-- Returns `false` when no types match
-- Treats non-existent headers as `*`
+<!-- [![Readme](https://img.shields.io/badge/readme-tested-brightgreen.svg?style=flat)](https://www.npmjs.com/package/reamde) -->
 
-## Installation
+AsyncKit provides harness for `parallel` and `serial` iterators over list of items represented by arrays or objects.
+Optionally it accepts abort function (should be synchronously return by iterator for each item), and terminates left over jobs upon an error event. For specific iteration order built-in (`ascending` and `descending`) and custom sort helpers also supported, via `asynckit.serialOrdered` method.
 
-This is a [Node.js](https://nodejs.org/en/) module available through the
-[npm registry](https://www.npmjs.com/). Installation is done using the
-[`npm install` command](https://docs.npmjs.com/getting-started/installing-npm-packages-locally):
+It ensures async operations to keep behavior more stable and prevent `Maximum call stack size exceeded` errors, from sync iterators.
+
+| compression        |     size |
+| :----------------- | -------: |
+| asynckit.js        | 12.34 kB |
+| asynckit.min.js    |  4.11 kB |
+| asynckit.min.js.gz |  1.47 kB |
+
+
+## Install
 
 ```sh
-$ npm install accepts
+$ npm install --save asynckit
 ```
-
-## API
-
-```js
-var accepts = require('accepts')
-```
-
-### accepts(req)
-
-Create a new `Accepts` object for the given `req`.
-
-#### .charset(charsets)
-
-Return the first accepted charset. If nothing in `charsets` is accepted,
-then `false` is returned.
-
-#### .charsets()
-
-Return the charsets that the request accepts, in the order of the client's
-preference (most preferred first).
-
-#### .encoding(encodings)
-
-Return the first accepted encoding. If nothing in `encodings` is accepted,
-then `false` is returned.
-
-#### .encodings()
-
-Return the encodings that the request accepts, in the order of the client's
-preference (most preferred first).
-
-#### .language(languages)
-
-Return the first accepted language. If nothing in `languages` is accepted,
-then `false` is returned.
-
-#### .languages()
-
-Return the languages that the request accepts, in the order of the client's
-preference (most preferred first).
-
-#### .type(types)
-
-Return the first accepted type (and it is returned as the same text as what
-appears in the `types` array). If nothing in `types` is accepted, then `false`
-is returned.
-
-The `types` array can contain full MIME types or file extensions. Any value
-that is not a full MIME types is passed to `require('mime-types').lookup`.
-
-#### .types()
-
-Return the types that the request accepts, in the order of the client's
-preference (most preferred first).
 
 ## Examples
 
-### Simple type negotiation
+### Parallel Jobs
 
-This simple example shows how to use `accepts` to return a different typed
-respond body based on what the client wants to accept. The server lists it's
-preferences in order and will get back the best match between the client and
-server.
+Runs iterator over provided array in parallel. Stores output in the `result` array,
+on the matching positions. In unlikely event of an error from one of the jobs,
+will terminate rest of the active jobs (if abort function is provided)
+and return error along with salvaged data to the main callback function.
 
-```js
-var accepts = require('accepts')
-var http = require('http')
+#### Input Array
 
-function app (req, res) {
-  var accept = accepts(req)
+```javascript
+var parallel = require('asynckit').parallel
+  , assert   = require('assert')
+  ;
 
-  // the order of this list is significant; should be server preferred order
-  switch (accept.type(['json', 'html'])) {
-    case 'json':
-      res.setHeader('Content-Type', 'application/json')
-      res.write('{"hello":"world!"}')
-      break
-    case 'html':
-      res.setHeader('Content-Type', 'text/html')
-      res.write('<b>hello, world!</b>')
-      break
-    default:
-      // the fallback is text/plain, so no need to specify it above
-      res.setHeader('Content-Type', 'text/plain')
-      res.write('hello, world!')
-      break
-  }
+var source         = [ 1, 1, 4, 16, 64, 32, 8, 2 ]
+  , expectedResult = [ 2, 2, 8, 32, 128, 64, 16, 4 ]
+  , expectedTarget = [ 1, 1, 2, 4, 8, 16, 32, 64 ]
+  , target         = []
+  ;
 
-  res.end()
+parallel(source, asyncJob, function(err, result)
+{
+  assert.deepEqual(result, expectedResult);
+  assert.deepEqual(target, expectedTarget);
+});
+
+// async job accepts one element from the array
+// and a callback function
+function asyncJob(item, cb)
+{
+  // different delays (in ms) per item
+  var delay = item * 25;
+
+  // pretend different jobs take different time to finish
+  // and not in consequential order
+  var timeoutId = setTimeout(function() {
+    target.push(item);
+    cb(null, item * 2);
+  }, delay);
+
+  // allow to cancel "leftover" jobs upon error
+  // return function, invoking of which will abort this job
+  return clearTimeout.bind(null, timeoutId);
 }
-
-http.createServer(app).listen(3000)
 ```
 
-You can test this out with the cURL program:
-```sh
-curl -I -H'Accept: text/html' http://localhost:3000/
+More examples could be found in [test/test-parallel-array.js](test/test-parallel-array.js).
+
+#### Input Object
+
+Also it supports named jobs, listed via object.
+
+```javascript
+var parallel = require('asynckit/parallel')
+  , assert   = require('assert')
+  ;
+
+var source         = { first: 1, one: 1, four: 4, sixteen: 16, sixtyFour: 64, thirtyTwo: 32, eight: 8, two: 2 }
+  , expectedResult = { first: 2, one: 2, four: 8, sixteen: 32, sixtyFour: 128, thirtyTwo: 64, eight: 16, two: 4 }
+  , expectedTarget = [ 1, 1, 2, 4, 8, 16, 32, 64 ]
+  , expectedKeys   = [ 'first', 'one', 'two', 'four', 'eight', 'sixteen', 'thirtyTwo', 'sixtyFour' ]
+  , target         = []
+  , keys           = []
+  ;
+
+parallel(source, asyncJob, function(err, result)
+{
+  assert.deepEqual(result, expectedResult);
+  assert.deepEqual(target, expectedTarget);
+  assert.deepEqual(keys, expectedKeys);
+});
+
+// supports full value, key, callback (shortcut) interface
+function asyncJob(item, key, cb)
+{
+  // different delays (in ms) per item
+  var delay = item * 25;
+
+  // pretend different jobs take different time to finish
+  // and not in consequential order
+  var timeoutId = setTimeout(function() {
+    keys.push(key);
+    target.push(item);
+    cb(null, item * 2);
+  }, delay);
+
+  // allow to cancel "leftover" jobs upon error
+  // return function, invoking of which will abort this job
+  return clearTimeout.bind(null, timeoutId);
+}
 ```
+
+More examples could be found in [test/test-parallel-object.js](test/test-parallel-object.js).
+
+### Serial Jobs
+
+Runs iterator over provided array sequentially. Stores output in the `result` array,
+on the matching positions. In unlikely event of an error from one of the jobs,
+will not proceed to the rest of the items in the list
+and return error along with salvaged data to the main callback function.
+
+#### Input Array
+
+```javascript
+var serial = require('asynckit/serial')
+  , assert = require('assert')
+  ;
+
+var source         = [ 1, 1, 4, 16, 64, 32, 8, 2 ]
+  , expectedResult = [ 2, 2, 8, 32, 128, 64, 16, 4 ]
+  , expectedTarget = [ 0, 1, 2, 3, 4, 5, 6, 7 ]
+  , target         = []
+  ;
+
+serial(source, asyncJob, function(err, result)
+{
+  assert.deepEqual(result, expectedResult);
+  assert.deepEqual(target, expectedTarget);
+});
+
+// extended interface (item, key, callback)
+// also supported for arrays
+function asyncJob(item, key, cb)
+{
+  target.push(key);
+
+  // it will be automatically made async
+  // even it iterator "returns" in the same event loop
+  cb(null, item * 2);
+}
+```
+
+More examples could be found in [test/test-serial-array.js](test/test-serial-array.js).
+
+#### Input Object
+
+Also it supports named jobs, listed via object.
+
+```javascript
+var serial = require('asynckit').serial
+  , assert = require('assert')
+  ;
+
+var source         = [ 1, 1, 4, 16, 64, 32, 8, 2 ]
+  , expectedResult = [ 2, 2, 8, 32, 128, 64, 16, 4 ]
+  , expectedTarget = [ 0, 1, 2, 3, 4, 5, 6, 7 ]
+  , target         = []
+  ;
+
+var source         = { first: 1, one: 1, four: 4, sixteen: 16, sixtyFour: 64, thirtyTwo: 32, eight: 8, two: 2 }
+  , expectedResult = { first: 2, one: 2, four: 8, sixteen: 32, sixtyFour: 128, thirtyTwo: 64, eight: 16, two: 4 }
+  , expectedTarget = [ 1, 1, 4, 16, 64, 32, 8, 2 ]
+  , target         = []
+  ;
+
+
+serial(source, asyncJob, function(err, result)
+{
+  assert.deepEqual(result, expectedResult);
+  assert.deepEqual(target, expectedTarget);
+});
+
+// shortcut interface (item, callback)
+// works for object as well as for the arrays
+function asyncJob(item, cb)
+{
+  target.push(item);
+
+  // it will be automatically made async
+  // even it iterator "returns" in the same event loop
+  cb(null, item * 2);
+}
+```
+
+More examples could be found in [test/test-serial-object.js](test/test-serial-object.js).
+
+_Note: Since _object_ is an _unordered_ collection of properties,
+it may produce unexpected results with sequential iterations.
+Whenever order of the jobs' execution is important please use `serialOrdered` method._
+
+### Ordered Serial Iterations
+
+TBD
+
+For example [compare-property](compare-property) package.
+
+### Streaming interface
+
+TBD
+
+## Want to Know More?
+
+More examples can be found in [test folder](test/).
+
+Or open an [issue](https://github.com/alexindigo/asynckit/issues) with questions and/or suggestions.
 
 ## License
 
-[MIT](LICENSE)
-
-[coveralls-image]: https://badgen.net/coveralls/c/github/jshttp/accepts/master
-[coveralls-url]: https://coveralls.io/r/jshttp/accepts?branch=master
-[github-actions-ci-image]: https://badgen.net/github/checks/jshttp/accepts/master?label=ci
-[github-actions-ci-url]: https://github.com/jshttp/accepts/actions/workflows/ci.yml
-[node-version-image]: https://badgen.net/npm/node/accepts
-[node-version-url]: https://nodejs.org/en/download
-[npm-downloads-image]: https://badgen.net/npm/dm/accepts
-[npm-url]: https://npmjs.org/package/accepts
-[npm-version-image]: https://badgen.net/npm/v/accepts
+AsyncKit is licensed under the MIT license.
