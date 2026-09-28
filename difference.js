@@ -1,5 +1,5 @@
 var convert = require('./convert'),
-    func = convert('defer', require('../defer'), require('./_falseOptions'));
+    func = convert('difference', require('../difference'));
 
 func.placeholder = require('./placeholder');
 module.exports = func;
